@@ -1,0 +1,15 @@
+name: modular-agent-web
+description: Web/HTTP, scraping, search, YouTube agents
+available_features:
+  - fetch-url
+  - html-scraper
+  - html-to-markdown
+  - searxng
+  - yt-transcript
+default_features:
+  - fetch-url
+  - html-scraper
+  - html-to-markdown
+  - searxng
+  - yt-transcript
+default_for: [desktop, cli]

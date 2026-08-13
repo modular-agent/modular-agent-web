@@ -1,10 +1,11 @@
 [package]
 name = "modular-agent-web"
-version = "0.9.0"
+version = "0.10.0"
 description = "Web Agents for Modular Agent"
 authors = ["Akira Ishino <akira@lumilab.jp>"]
 edition = "2024"
 license = "Apache-2.0 OR MIT"
+repository = "https://github.com/modular-agent/modular-agent-web"
 
 [dependencies]
 html-to-markdown-rs = { version = "3.9.0", optional = true }
@@ -15,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2.5.7"
 
-modular-agent-core = "0.25.0"
+modular-agent-core = { path = "../../crates/modular-agent-core" }
 
 [dev-dependencies]
 reqwest = { version = "0.13.4", default-features = false }
@@ -28,6 +29,3 @@ html-scraper = ["scraper"]
 html-to-markdown = ["html-to-markdown-rs"]
 searxng = []
 yt-transcript = ["quick-xml"]
-
-# [patch.crates-io]
-# modular-agent-core = { path = "../modular-agent-core/modular-agent-core" }
