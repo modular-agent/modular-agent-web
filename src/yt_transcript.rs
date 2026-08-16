@@ -43,7 +43,7 @@ fn android_user_agent() -> String {
 /// One timed segment of a transcript.
 ///
 /// Field names match yt-transcript-rs' `FetchedTranscriptSnippet`, which this
-/// module replaced, so presets consuming the `transcript` port keep working.
+/// module replaced, so patches consuming the `transcript` port keep working.
 ///
 /// `pub` only so the network integration tests can reach it; not part of the
 /// crate's supported API.
