@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use modular_agent_core::{
-    Agent, AgentContext, AgentData, AgentError, AgentOutput, AgentSpec, AgentValue, AsAgent,
-    ModularAgent, async_trait, modular_agent,
+    AsModule, Error, ModularAgent, Module, ModuleContext, ModuleData, ModuleOutput, ModuleSpec,
+    Result, Value, async_trait, modular_agent,
 };
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesRef, BytesStart, Event};
@@ -30,10 +30,10 @@ static INNERTUBE_PLAYER_URL: &str = "https://www.youtube.com/youtubei/v1/player"
 
 /// The WEB InnerTube client is rejected without a PoToken, so the ANDROID
 /// client is used instead. Its version has to look plausible to YouTube, and
-/// the same version is echoed in the User-Agent below.
+/// the same version is echoed in the User-Module below.
 static ANDROID_CLIENT_VERSION: &str = "20.10.38";
 
-fn android_user_agent() -> String {
+fn android_user_module() -> String {
     format!(
         "com.google.android.youtube/{} (Linux; U; Android 11) gzip",
         ANDROID_CLIENT_VERSION
@@ -145,10 +145,7 @@ impl CaptionTrack {
 /// language a manually created track beats an auto-generated one. An earlier
 /// language always wins, even when it only has an auto-generated track — the
 /// same order yt-transcript-rs and youtube-transcript-api use.
-fn select_track<'a>(
-    tracks: &'a [CaptionTrack],
-    languages: &[String],
-) -> Result<&'a CaptionTrack, AgentError> {
+fn select_track<'a>(tracks: &'a [CaptionTrack], languages: &[String]) -> Result<&'a CaptionTrack> {
     for language in languages {
         for generated in [false, true] {
             let track = tracks.iter().find(|track| {
@@ -171,7 +168,7 @@ fn select_track<'a>(
             }
         })
         .collect();
-    Err(AgentError::InvalidValue(format!(
+    Err(Error::InvalidValue(format!(
         "No transcript found for languages [{}]. Available: [{}]",
         languages.join(", "),
         available.join(", ")
@@ -224,20 +221,16 @@ fn unescape_lenient(text: &str) -> String {
 
 /// Read a numeric attribute, scaled by `scale` (1000 for millisecond values).
 /// Returns `Ok(None)` when the attribute is absent or not a number.
-fn read_time_attribute(
-    element: &BytesStart,
-    name: &str,
-    scale: f64,
-) -> Result<Option<f64>, AgentError> {
+fn read_time_attribute(element: &BytesStart, name: &str, scale: f64) -> Result<Option<f64>> {
     let attribute = element
         .try_get_attribute(name)
-        .map_err(|e| AgentError::IoError(format!("Timedtext attribute error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("Timedtext attribute error: {}", e)))?;
     let Some(attribute) = attribute else {
         return Ok(None);
     };
     let raw = attribute
         .normalized_value(XmlVersion::Implicit1_0)
-        .map_err(|e| AgentError::IoError(format!("Timedtext attribute error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("Timedtext attribute error: {}", e)))?;
     Ok(raw.trim().parse::<f64>().ok().map(|value| value / scale))
 }
 
@@ -247,10 +240,10 @@ fn read_time_attribute(
 /// so text assembly has to resolve them. Entities outside the predefined XML
 /// set and invalid character references (`&#0;`, out-of-range code points) are
 /// kept verbatim rather than aborting the transcript.
-fn push_general_ref(out: &mut String, reference: &BytesRef) -> Result<(), AgentError> {
+fn push_general_ref(out: &mut String, reference: &BytesRef) -> Result<()> {
     let name = reference
         .decode()
-        .map_err(|e| AgentError::IoError(format!("Timedtext entity error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("Timedtext entity error: {}", e)))?;
     if let Ok(Some(ch)) = reference.resolve_char_ref() {
         out.push(ch);
         return Ok(());
@@ -296,7 +289,7 @@ fn flush_snippet(
 /// emits them as timing-only continuation markers. Elements without a
 /// parseable start time are ignored, so a non-timedtext document yields no
 /// snippets instead of one snippet at 0.0s.
-fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>, AgentError> {
+fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>> {
     let mut reader = Reader::from_str(xml);
     let config = reader.config_mut();
     // Caption text is untrusted input; a stray '&' or an unbalanced tag should
@@ -311,7 +304,7 @@ fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>, AgentError> {
     loop {
         let event = reader
             .read_event()
-            .map_err(|e| AgentError::IoError(format!("Timedtext parse error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("Timedtext parse error: {}", e)))?;
         match event {
             Event::Start(element) | Event::Empty(element) => {
                 let legacy = match element.name().as_ref() {
@@ -354,17 +347,17 @@ fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>, AgentError> {
             }
             Event::Text(text) => {
                 if let Some((snippet, _)) = open.as_mut() {
-                    let decoded = text.xml10_content().map_err(|e| {
-                        AgentError::IoError(format!("Timedtext decode error: {}", e))
-                    })?;
+                    let decoded = text
+                        .xml10_content()
+                        .map_err(|e| Error::IoError(format!("Timedtext decode error: {}", e)))?;
                     snippet.text.push_str(&decoded);
                 }
             }
             Event::CData(data) => {
                 if let Some((snippet, _)) = open.as_mut() {
-                    let decoded = data.decode().map_err(|e| {
-                        AgentError::IoError(format!("Timedtext decode error: {}", e))
-                    })?;
+                    let decoded = data
+                        .decode()
+                        .map_err(|e| Error::IoError(format!("Timedtext decode error: {}", e)))?;
                     snippet.text.push_str(&decoded);
                 }
             }
@@ -388,7 +381,7 @@ fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>, AgentError> {
 ///
 /// Asks the player endpoint for the caption track list, picks a track
 /// according to `languages` (see [`select_track`]), then downloads and parses
-/// its timedtext document. Kept out of the agent, and `pub`, only so it can be
+/// its timedtext document. Kept out of the module, and `pub`, only so it can be
 /// exercised directly by the network integration tests; not part of the
 /// crate's supported API.
 #[doc(hidden)]
@@ -396,7 +389,7 @@ pub async fn fetch_transcript(
     client: &Client,
     video_id: &str,
     languages: &[String],
-) -> Result<Transcript, AgentError> {
+) -> Result<Transcript> {
     let request_body = json!({
         "context": {
             "client": {
@@ -412,24 +405,24 @@ pub async fn fetch_transcript(
 
     let response = client
         .post(INNERTUBE_PLAYER_URL)
-        .header(USER_AGENT, android_user_agent())
+        .header(USER_AGENT, android_user_module())
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| AgentError::IoError(format!("YouTube player API request error: {}", e)))?
+        .map_err(|e| Error::IoError(format!("YouTube player API request error: {}", e)))?
         .error_for_status()
-        .map_err(|e| AgentError::IoError(format!("YouTube player API failed: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("YouTube player API failed: {}", e)))?;
 
     let player: PlayerResponse = response
         .json()
         .await
-        .map_err(|e| AgentError::IoError(format!("YouTube player API parse error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("YouTube player API parse error: {}", e)))?;
 
     if let Some(playability) = &player.playability_status {
         let status = playability.status.as_deref().unwrap_or("UNKNOWN");
         if status != "OK" {
             let reason = playability.reason.as_deref().unwrap_or("no reason given");
-            return Err(AgentError::IoError(format!(
+            return Err(Error::IoError(format!(
                 "YouTube will not play video '{}': {} ({})",
                 video_id, status, reason
             )));
@@ -442,7 +435,7 @@ pub async fn fetch_transcript(
         .map(|tracklist| tracklist.caption_tracks)
         .unwrap_or_default();
     if tracks.is_empty() {
-        return Err(AgentError::InvalidValue(format!(
+        return Err(Error::InvalidValue(format!(
             "Video '{}' has no captions",
             video_id
         )));
@@ -452,19 +445,19 @@ pub async fn fetch_transcript(
 
     let timedtext = client
         .get(&track.base_url)
-        .header(USER_AGENT, android_user_agent())
+        .header(USER_AGENT, android_user_module())
         .send()
         .await
-        .map_err(|e| AgentError::IoError(format!("Timedtext request error: {}", e)))?
+        .map_err(|e| Error::IoError(format!("Timedtext request error: {}", e)))?
         .error_for_status()
-        .map_err(|e| AgentError::IoError(format!("Timedtext request failed: {}", e)))?
+        .map_err(|e| Error::IoError(format!("Timedtext request failed: {}", e)))?
         .text()
         .await
-        .map_err(|e| AgentError::IoError(format!("Timedtext read error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("Timedtext read error: {}", e)))?;
 
     let snippets = parse_timedtext(&timedtext)?;
     if snippets.is_empty() {
-        return Err(AgentError::IoError(format!(
+        return Err(Error::IoError(format!(
             "Transcript for video '{}' ({}) came back empty",
             video_id, track.language_code
         )));
@@ -480,12 +473,12 @@ pub async fn fetch_transcript(
 }
 
 /// Extract the video ID from a YouTube watch URL.
-fn video_id_from_url(url_str: &str) -> Result<String, AgentError> {
+fn video_id_from_url(url_str: &str) -> Result<String> {
     let url = Url::parse(url_str)
-        .map_err(|e| AgentError::InvalidValue(format!("Invalid URL '{}': {}", url_str, e)))?;
+        .map_err(|e| Error::InvalidValue(format!("Invalid URL '{}': {}", url_str, e)))?;
     let domain = url.domain().unwrap_or("");
     if domain != "www.youtube.com" && domain != "youtube.com" && domain != "youtu.be" {
-        return Err(AgentError::InvalidValue(format!(
+        return Err(Error::InvalidValue(format!(
             "URL '{}' is not a valid YouTube URL",
             url_str
         )));
@@ -497,7 +490,7 @@ fn video_id_from_url(url_str: &str) -> Result<String, AgentError> {
         .find(|(key, _)| key == "v")
         .map(|(_, value)| value.to_string())
         .ok_or_else(|| {
-            AgentError::InvalidValue(format!("Could not find 'v' parameter in URL '{}'", url_str))
+            Error::InvalidValue(format!("Could not find 'v' parameter in URL '{}'", url_str))
         })
 }
 
@@ -538,46 +531,39 @@ fn video_id_from_url(url_str: &str) -> Result<String, AgentError> {
         description = "Comma-separated language codes in preference order, e.g. en,ja",
     ),
 )]
-struct FetchYtTranscriptAgent {
-    data: AgentData,
+struct FetchYtTranscriptModule {
+    data: ModuleData,
     client: Client,
 }
 
 #[async_trait]
-impl AsAgent for FetchYtTranscriptAgent {
-    fn new(ma: ModularAgent, id: String, spec: AgentSpec) -> Result<Self, AgentError> {
+impl AsModule for FetchYtTranscriptModule {
+    fn new(ma: ModularAgent, id: String, spec: ModuleSpec) -> Result<Self> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| AgentError::IoError(format!("YouTube client build error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("YouTube client build error: {}", e)))?;
         Ok(Self {
-            data: AgentData::new(ma, id, spec),
+            data: ModuleData::new(ma, id, spec),
             client,
         })
     }
 
-    async fn process(
-        &mut self,
-        ctx: AgentContext,
-        port: String,
-        value: AgentValue,
-    ) -> Result<(), AgentError> {
+    async fn process(&mut self, ctx: ModuleContext, port: String, value: Value) -> Result<()> {
         let video_id = if port == PORT_URL {
             let url_str = value.as_str().ok_or_else(|| {
-                AgentError::InvalidValue("Input value for 'url' must be a string".to_string())
+                Error::InvalidValue("Input value for 'url' must be a string".to_string())
             })?;
             video_id_from_url(url_str)?
         } else if port == PORT_VIDEO_ID {
             value
                 .as_str()
                 .ok_or_else(|| {
-                    AgentError::InvalidValue(
-                        "Input value for 'video_id' must be a string".to_string(),
-                    )
+                    Error::InvalidValue("Input value for 'video_id' must be a string".to_string())
                 })?
                 .to_string()
         } else {
-            return Err(AgentError::InvalidValue(format!(
+            return Err(Error::InvalidValue(format!(
                 "Unexpected input port '{}'",
                 port
             )));
@@ -602,9 +588,8 @@ impl AsAgent for FetchYtTranscriptAgent {
         self.output(
             ctx.clone(),
             PORT_TRANSCRIPT,
-            AgentValue::from_serialize(&transcript).map_err(|e| {
-                AgentError::IoError(format!("Transcript Serialization Error: {}", e))
-            })?,
+            Value::from_serialize(&transcript)
+                .map_err(|e| Error::IoError(format!("Transcript Serialization Error: {}", e)))?,
         )
         .await?;
 
@@ -755,7 +740,7 @@ mod tests {
         let tracks = vec![track("en", Some("asr"))];
         let languages = vec!["fr".to_string()];
         let err = select_track(&tracks, &languages).unwrap_err();
-        let AgentError::InvalidValue(message) = err else {
+        let Error::InvalidValue(message) = err else {
             panic!("expected InvalidValue");
         };
         assert!(message.contains("fr"));

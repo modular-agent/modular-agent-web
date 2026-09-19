@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use modular_agent_core::{
-    Agent, AgentContext, AgentData, AgentError, AgentOutput, AgentSpec, AgentValue, AsAgent,
-    ModularAgent, async_trait, modular_agent,
+    AsModule, Error, ModularAgent, Module, ModuleContext, ModuleData, ModuleOutput, ModuleSpec,
+    Result, Value, async_trait, modular_agent,
 };
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -69,9 +69,9 @@ struct SearchResponse {
 
 /// Parse a SearXNG JSON search response and truncate it to `max_results`.
 /// A `max_results` of 0 or less means unlimited.
-fn parse_search_results(body: &str, max_results: i64) -> Result<Vec<SearchResult>, AgentError> {
+fn parse_search_results(body: &str, max_results: i64) -> Result<Vec<SearchResult>> {
     let response: SearchResponse = serde_json::from_str(body)
-        .map_err(|e| AgentError::IoError(format!("SearXNG response parse error: {}", e)))?;
+        .map_err(|e| Error::IoError(format!("SearXNG response parse error: {}", e)))?;
     let mut results = response.results;
     if max_results > 0 {
         results.truncate(max_results as usize);
@@ -80,13 +80,13 @@ fn parse_search_results(body: &str, max_results: i64) -> Result<Vec<SearchResult
 }
 
 /// Read the SearXNG base URL from the global configs, without a trailing slash.
-fn get_searxng_url(ma: &ModularAgent) -> Result<String, AgentError> {
-    ma.get_global_configs(SearxngSearchAgent::DEF_NAME)
+fn get_searxng_url(ma: &ModularAgent) -> Result<String> {
+    ma.get_global_configs(SearxngSearchModule::DEF_NAME)
         .and_then(|cfg| cfg.get_string(CONFIG_SEARXNG_URL).ok())
         .map(|url| url.trim().trim_end_matches('/').to_string())
         .filter(|url| !url.is_empty())
         .ok_or_else(|| {
-            AgentError::InvalidConfig(
+            Error::InvalidConfig(
                 "SearXNG URL is not set. Configure it in global settings.".to_string(),
             )
         })
@@ -96,7 +96,7 @@ fn get_searxng_url(ma: &ModularAgent) -> Result<String, AgentError> {
 ///
 /// Sends `GET {searxng_url}/search?q=...&format=json` and emits the parsed
 /// `results` array. The instance must have `json` enabled in `search.formats`
-/// (`settings.yml`); otherwise it answers 403 and the agent reports that hint.
+/// (`settings.yml`); otherwise it answers 403 and the module reports that hint.
 ///
 /// The `query` input takes either a plain string or an object. Object fields
 /// override the config defaults for that single search; unset parameters are
@@ -163,30 +163,25 @@ fn get_searxng_url(ma: &ModularAgent) -> Result<String, AgentError> {
     ),
     hint(width = 1, height = 2),
 )]
-struct SearxngSearchAgent {
-    data: AgentData,
+struct SearxngSearchModule {
+    data: ModuleData,
     client: Client,
 }
 
 #[async_trait]
-impl AsAgent for SearxngSearchAgent {
-    fn new(ma: ModularAgent, id: String, spec: AgentSpec) -> Result<Self, AgentError> {
+impl AsModule for SearxngSearchModule {
+    fn new(ma: ModularAgent, id: String, spec: ModuleSpec) -> Result<Self> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| AgentError::IoError(format!("SearXNG client build error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("SearXNG client build error: {}", e)))?;
         Ok(Self {
-            data: AgentData::new(ma, id, spec),
+            data: ModuleData::new(ma, id, spec),
             client,
         })
     }
 
-    async fn process(
-        &mut self,
-        ctx: AgentContext,
-        _port: String,
-        value: AgentValue,
-    ) -> Result<(), AgentError> {
+    async fn process(&mut self, ctx: ModuleContext, _port: String, value: Value) -> Result<()> {
         let request = if let Some(query) = value.as_str() {
             SearchRequest {
                 query: query.to_string(),
@@ -195,15 +190,13 @@ impl AsAgent for SearxngSearchAgent {
         } else if value.is_object() {
             value.to_deserialize::<SearchRequest>()?
         } else {
-            return Err(AgentError::InvalidValue(
+            return Err(Error::InvalidValue(
                 "Input value for 'query' must be a string or an object".to_string(),
             ));
         };
 
         if request.query.trim().is_empty() {
-            return Err(AgentError::InvalidValue(
-                "Search query is empty".to_string(),
-            ));
+            return Err(Error::InvalidValue("Search query is empty".to_string()));
         }
 
         let config = self.configs()?;
@@ -252,30 +245,30 @@ impl AsAgent for SearxngSearchAgent {
             .await
             .map_err(|e| {
                 if e.is_connect() {
-                    AgentError::IoError(format!("SearXNG is not reachable at {}: {}", base_url, e))
+                    Error::IoError(format!("SearXNG is not reachable at {}: {}", base_url, e))
                 } else {
-                    AgentError::IoError(format!("SearXNG request error: {}", e))
+                    Error::IoError(format!("SearXNG request error: {}", e))
                 }
             })?;
 
         if response.status() == StatusCode::FORBIDDEN {
-            return Err(AgentError::IoError(format!(
+            return Err(Error::IoError(format!(
                 "SearXNG at {} returned 403 Forbidden. The JSON API is likely disabled; add 'json' to 'search.formats' in the instance settings.yml",
                 base_url
             )));
         }
         let response = response
             .error_for_status()
-            .map_err(|e| AgentError::IoError(format!("SearXNG search failed: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("SearXNG search failed: {}", e)))?;
 
         let body = response
             .text()
             .await
-            .map_err(|e| AgentError::IoError(format!("SearXNG response read error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("SearXNG response read error: {}", e)))?;
 
         let results = parse_search_results(&body, max_results)?;
 
-        self.output(ctx, PORT_RESULTS, AgentValue::from_serialize(&results)?)
+        self.output(ctx, PORT_RESULTS, Value::from_serialize(&results)?)
             .await
     }
 }
@@ -377,7 +370,7 @@ mod tests {
     #[test]
     fn invalid_json_is_an_error() {
         let err = parse_search_results("<html>403 Forbidden</html>", 10).unwrap_err();
-        assert!(matches!(err, AgentError::IoError(_)));
+        assert!(matches!(err, Error::IoError(_)));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use modular_agent_core::{
-    AgentContext, AgentData, AgentError, AgentOutput, AgentSpec, AgentValue, AsAgent, ModularAgent,
-    async_trait, modular_agent,
+    AsModule, Error, ModularAgent, ModuleContext, ModuleData, ModuleOutput, ModuleSpec, Result,
+    Value, async_trait, modular_agent,
 };
 use reqwest::Client;
 
@@ -16,26 +16,21 @@ static PORT_TEXT: &str = "text";
     inputs = [PORT_URL],
     outputs = [PORT_TEXT],
 )]
-struct FetchUrlAgent {
-    data: AgentData,
+struct FetchUrlModule {
+    data: ModuleData,
 }
 
 #[async_trait]
-impl AsAgent for FetchUrlAgent {
-    fn new(ma: ModularAgent, id: String, spec: AgentSpec) -> Result<Self, AgentError> {
+impl AsModule for FetchUrlModule {
+    fn new(ma: ModularAgent, id: String, spec: ModuleSpec) -> Result<Self> {
         Ok(Self {
-            data: AgentData::new(ma, id, spec),
+            data: ModuleData::new(ma, id, spec),
         })
     }
 
-    async fn process(
-        &mut self,
-        ctx: AgentContext,
-        _port: String,
-        value: AgentValue,
-    ) -> Result<(), AgentError> {
+    async fn process(&mut self, ctx: ModuleContext, _port: String, value: Value) -> Result<()> {
         let url = value.as_str().ok_or_else(|| {
-            AgentError::InvalidValue("Input value for 'url' must be a string".to_string())
+            Error::InvalidValue("Input value for 'url' must be a string".to_string())
         })?;
         // TODO: validate URL
 
@@ -44,12 +39,12 @@ impl AsAgent for FetchUrlAgent {
             .get(url)
             .send()
             .await
-            .map_err(|e| AgentError::IoError(format!("HTTP Request Error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("HTTP Request Error: {}", e)))?;
         let text = response
             .text()
             .await
-            .map_err(|e| AgentError::IoError(format!("HTTP Response Error: {}", e)))?;
+            .map_err(|e| Error::IoError(format!("HTTP Response Error: {}", e)))?;
 
-        self.output(ctx, PORT_TEXT, AgentValue::string(text)).await
+        self.output(ctx, PORT_TEXT, Value::string(text)).await
     }
 }

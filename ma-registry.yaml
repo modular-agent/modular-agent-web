@@ -1,5 +1,5 @@
 name: modular-agent-web
-description: Web/HTTP, scraping, search, YouTube agents
+description: Web/HTTP, scraping, search, YouTube modules
 available_features:
   - fetch-url
   - html-scraper
