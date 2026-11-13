@@ -240,14 +240,12 @@ fn read_time_attribute(element: &BytesStart, name: &str, scale: f64) -> Result<O
 /// so text assembly has to resolve them. Entities outside the predefined XML
 /// set and invalid character references (`&#0;`, out-of-range code points) are
 /// kept verbatim rather than aborting the transcript.
-fn push_general_ref(out: &mut String, reference: &BytesRef) -> Result<()> {
-    let name = reference
-        .decode()
-        .map_err(|e| Error::IoError(format!("Timedtext entity error: {}", e)))?;
+fn push_general_ref(out: &mut String, reference: &BytesRef) {
     if let Ok(Some(ch)) = reference.resolve_char_ref() {
         out.push(ch);
-        return Ok(());
+        return;
     }
+    let name = reference.xml10_content();
     match resolve_predefined_entity(&name) {
         Some(value) => out.push_str(value),
         None => {
@@ -256,7 +254,6 @@ fn push_general_ref(out: &mut String, reference: &BytesRef) -> Result<()> {
             out.push(';');
         }
     }
-    Ok(())
 }
 
 /// Close the snippet being built and keep it unless its text is blank.
@@ -308,8 +305,8 @@ fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>> {
         match event {
             Event::Start(element) | Event::Empty(element) => {
                 let legacy = match element.name().as_ref() {
-                    b"p" => false,
-                    b"text" => true,
+                    "p" => false,
+                    "text" => true,
                     // <s> and everything else only contributes text.
                     _ => continue,
                 };
@@ -341,29 +338,23 @@ fn parse_timedtext(xml: &str) -> Result<Vec<TranscriptSnippet>> {
                 ));
             }
             Event::End(element) => {
-                if matches!(element.name().as_ref(), b"p" | b"text") {
+                if matches!(element.name().as_ref(), "p" | "text") {
                     flush_snippet(&mut open, &mut snippets);
                 }
             }
             Event::Text(text) => {
                 if let Some((snippet, _)) = open.as_mut() {
-                    let decoded = text
-                        .xml10_content()
-                        .map_err(|e| Error::IoError(format!("Timedtext decode error: {}", e)))?;
-                    snippet.text.push_str(&decoded);
+                    snippet.text.push_str(&text.xml10_content());
                 }
             }
             Event::CData(data) => {
                 if let Some((snippet, _)) = open.as_mut() {
-                    let decoded = data
-                        .decode()
-                        .map_err(|e| Error::IoError(format!("Timedtext decode error: {}", e)))?;
-                    snippet.text.push_str(&decoded);
+                    snippet.text.push_str(&data.xml10_content());
                 }
             }
             Event::GeneralRef(reference) => {
                 if let Some((snippet, _)) = open.as_mut() {
-                    push_general_ref(&mut snippet.text, &reference)?;
+                    push_general_ref(&mut snippet.text, &reference);
                 }
             }
             Event::Eof => {
